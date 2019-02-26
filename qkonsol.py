@@ -1,5 +1,5 @@
-from PySide2.QtCore import QProcess, Qt
-from PySide2.QtGui import QFontMetrics, QKeyEvent, QPalette, QColor
+from PySide2.QtCore import QProcess, Qt, QDir
+from PySide2.QtGui import QFontMetrics, QKeyEvent, QPalette, QColor, QTextCursor
 from PySide2.QtWidgets import QPlainTextEdit, QFrame
 import sys
 import ctypes
@@ -8,14 +8,16 @@ import ctypes
 class QKonsol(QPlainTextEdit):
 
     userTextEntry = ""
-    commandList = [""]
+    commandList = ["cd " + QDir.homePath()]
     length = 0
+    history = -1
 
     def __init__(self, parent=None):
         super().__init__()
         self.setParent(parent)
         self.setWindowTitle(self.tr("Terminal"))
         self.setCursorWidth(7)
+        self.setContextMenuPolicy(Qt.NoContextMenu)
         font = self.font()
         font.setFamily("Consolas")
         font.setPointSize(10)
@@ -30,41 +32,56 @@ class QKonsol(QPlainTextEdit):
         self.setPalette(palette)
         self.resize(720, 480)
 
-        self.process = QProcess()
+        self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.MergedChannels)
         self.process.setReadChannel(QProcess.StandardOutput)
 
         self.process.readyReadStandardOutput.connect(self.readStandartOutput)
+        self.process.readyReadStandardError.connect(lambda : print(self.readAllStandartError()))
         self.cursorPositionChanged.connect(self.cursorPosition)
+        self.textChanged.connect(self.whatText)
 
 
         if sys.platform == "win32":
-            self.process.start("powershell.exe", mode=QProcess.ReadWrite)
+            self.process.start("cmd.exe", [], mode=QProcess.ReadWrite)
 
         else:
-            self.process.start("./bin/bash", mode=QProcess.ReadWrite)
+            self.process.start("bash", ["-i"], mode=QProcess.ReadWrite) # bash -i interactive mode
 
 
 
 
     def readStandartOutput(self):
-        st = self.process.readAllStandardOutput().data().decode(str(ctypes.cdll.kernel32.GetConsoleOutputCP()))
-        # ss = QTextStream(st)
-        # ss.setCodec(ctypes.cdll.kernel32.GetConsoleOutputCP())
-        # ss = ss.readAll()
-        # print(st,self.commandList[-1] == ss)
-        if self.commandList[-1] != st:
+        if sys.platform == "win32":
+            st = self.process.readAllStandardOutput().data().decode(str(ctypes.cdll.kernel32.GetConsoleOutputCP()))
+
+        else:
+            st = self.process.readAllStandardOutput().data().decode("utf-8")
+
+        # print(repr(st), self.commandList)
+        if not st.startswith(self.commandList[-1]):
             self.appendPlainText(st)
+
+
+    def __line_end(self):
+        if sys.platform == "win32":
+            return "\r\n"
+
+        elif sys.platform == "linux":
+            return "\n"
+
+        elif sys.platform == "darwin":
+            return "\r"
 
 
     def keyPressEvent(self, event: QKeyEvent):
 
         if event.key() in (Qt.Key_Enter, Qt.Key_Return):
-            self.userTextEntry += "\r\n"
-            print(repr(self.userTextEntry))
-            self.commandList.append(self.userTextEntry)
-            self.length = len(self.userTextEntry)
-            self.process.writeData(self.userTextEntry, self.length)
+            if self.commandList[-1] != self.userTextEntry and self.userTextEntry != "":
+                self.commandList.append(self.userTextEntry)
+
+            self.length = len(self.userTextEntry + self.__line_end())
+            self.process.writeData(self.userTextEntry + self.__line_end(), self.length)
             self.userTextEntry = ""
 
         elif event.key() == Qt.Key_Backspace:
@@ -75,14 +92,50 @@ class QKonsol(QPlainTextEdit):
                 self.userTextEntry = self.userTextEntry[:-1]
                 super().keyPressEvent(event)
 
+        elif event.key() == Qt.Key_Up:
+            if -len(self.commandList) < self.history:
+                self.history -= 1
+                print(self.commandList[self.history])
+            return
 
-        elif event.modifiers() != Qt.ControlModifier:
+        elif event.key() == Qt.Key_Down:
+            if self.history < -1:
+                self.history += 1
+                print(self.commandList[self.history])
+            return
+
+        elif event.key() == Qt.Key_Delete:
+            return
+
+        elif event.modifiers() == Qt.ControlModifier:
+            super().keyPressEvent(event)
+
+        else:
             super().keyPressEvent(event)
             self.userTextEntry += event.text()
 
 
-    def cursorPosition(self):
-        pass
+    def cursorPosition(self): pass
+        # print(self.textCursor().position())
+
+
+
+
+    def whatText(self): pass
+        # print(self.blockCount())
+
+
+    def insertFromMimeData(self, source):
+        super().insertFromMimeData(source)
+        self.userTextEntry += source.text()
+
+    def mouseReleaseEvent(self, event):
+        super().mousePressEvent(event)
+        cur = self.textCursor()
+
+        if event.button() == Qt.LeftButton:
+            cur.movePosition(QTextCursor.End, QTextCursor.MoveAnchor, 1)
+            self.setTextCursor(cur)
 
 
     def closeEvent(self, event):
